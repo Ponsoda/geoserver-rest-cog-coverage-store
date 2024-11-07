@@ -627,8 +627,8 @@ class Geoserver:
             elif rangeReaderSettings == "Azure":
                 settings = '''
                 <rangeReaderSettings>Azure</rangeReaderSettings>
-                <accountName>{cog_settings.get("accountKey", "user")}</accountName>
-                <accountKey>{cog_settings.get("secretAccessKey", "password")}</accountKey>
+                <accountName>{cog_settings.get("accountName", "user")}</accountName>
+                <accountKey>{cog_settings.get("accountKey", "password")}</accountKey>
                 '''
             
             cog_xml = f"""
