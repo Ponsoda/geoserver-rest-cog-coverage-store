@@ -544,11 +544,13 @@ class Geoserver:
 
     def create_coveragestore(
         self,
-        path,
+        path: Optional[str] = None,
+        remote_url: Optional[str] = None,
         workspace: Optional[str] = None,
         layer_name: Optional[str] = None,
         file_type: str = "GeoTIFF",
         content_type: str = "image/tiff",
+        cog_settings: Optional[Dict[str, str]] = None
     ):
         """
         Creates the coverage store; Data will be uploaded to the server.
@@ -557,6 +559,8 @@ class Geoserver:
         ----------
         path : str
             The path to the file.
+        remote_url : str, optional
+            The URL of the remote resource (e.g., COG).
         workspace : str, optional
             The name of the workspace.
         layer_name : str, optional
@@ -565,6 +569,8 @@ class Geoserver:
             The type of the file.
         content_type : str
             The content type of the file.
+        cog_settings : dict, optional
+            COG-specific settings for online resources.
 
         Returns
         -------
@@ -575,34 +581,85 @@ class Geoserver:
         -----
         the path to the file and file_type indicating it is a geotiff, arcgrid or other raster type
         """
-        if path is None:
+        if path is None and remote_url is None:
             raise Exception("You must provide the full path to the raster")
 
         if workspace is None:
             workspace = "default"
 
         if layer_name is None:
-            layer_name = os.path.basename(path)
+            if path:
+                layer_name = os.path.basename(path)
+            elif remote_url:
+                url.split("/")[-1]
             f = layer_name.split(".")
             if len(f) > 0:
                 layer_name = f[0]
 
         file_type = file_type.lower()
 
-        url = "{0}/rest/workspaces/{1}/coveragestores/{2}/file.{3}?coverageName={2}".format(
-            self.service_url, workspace, layer_name, file_type
-        )
+        if path:
+            url = "{0}/rest/workspaces/{1}/coveragestores/{2}/file.{3}?coverageName={2}".format(
+                self.service_url, workspace, layer_name, file_type
+            )
+            
+            headers = {"content-type": content_type, "Accept": "application/json"}
 
-        headers = {"content-type": content_type, "Accept": "application/json"}
+            with open(path, "rb") as f:
+                r = self._requests(method="put", url=url, data=f, headers=headers)
 
-        r = None
-        with open(path, "rb") as f:
-            r = self._requests(method="put", url=url, data=f, headers=headers)
+        elif remote_url:
+            rangeReaderSettings = cog_settings.get("rangeReaderSettings", "HTTP")
+            if rangeReaderSettings == "HTTP":
+                settings = '''
+                <rangeReaderSettings>HTTP</rangeReaderSettings>
+                <userName>{cog_settings.get("userName", "user")}</userName>
+                <password>{cog_settings.get("password", "password")}</password>
+                '''
+            elif rangeReaderSettings == "GS":
+                settings = "<rangeReaderSettings>GS</rangeReaderSettings>"
+            elif rangeReaderSettings == "S3":
+                settings = '''
+                <rangeReaderSettings>S3</rangeReaderSettings>
+                <accessKeyID>{cog_settings.get("accessKeyID", "user")}</accessKeyID>
+                <secretAccessKey>{cog_settings.get("secretAccessKey", "password")}</secretAccessKey>
+                '''
+            elif rangeReaderSettings == "Azure":
+                settings = '''
+                <rangeReaderSettings>Azure</rangeReaderSettings>
+                <accountName>{cog_settings.get("accountKey", "user")}</accountName>
+                <accountKey>{cog_settings.get("secretAccessKey", "password")}</accountKey>
+                '''
+            
+            cog_xml = f"""
+                <coverageStore>
+                    <name>{layer_name}</name>
+                    <type>GeoTIFF</type>
+                    <enabled>true</enabled>
+                    <workspace>{workspace}</workspace>
+                    <url>cog://{remote_url}</url>
+                    <metadata>
+                        <entry key="CogSettings.Key">
+                            <cogSettings>
+                                    <useCachingStream>{cog_settings.get("useCachingStream", "false")}</useCachingStream>
+                                    {settings}
+                                </cogSettings>
+                            </entry>
+                        </metadata>
+                    </coverageStore>
+                """
+            url = "{0}/rest/workspaces/{1}/coveragestores?configure=all".format(
+                self.service_url, workspace
+            )
 
-            if r.status_code == 201:
-                return r.json()
-            else:
-                raise GeoserverException(r.status_code, r.content)
+            headers = {"content-type": "text/xml"}
+
+            r = self._requests(method="post", url=url, data=cog_xml, headers=headers)
+
+        if r.status_code == 201:
+            return {"layer_name": r.text} # Returning r.json() causes an error
+        else:
+            raise GeoserverException(r.status_code, r.content)
 
     def publish_time_dimension_to_coveragestore(
         self,
@@ -666,7 +723,7 @@ class Geoserver:
         )
 
         r = self._requests(
-            method="put", url=url, data=time_dimension_data, headers=headers
+            method="post", url=url, data=time_dimension_data, headers=headers
         )
         if r.status_code in [200, 201]:
             return r.json()
